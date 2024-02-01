@@ -1,0 +1,2 @@
+# mechinterp
+mech interpretability playground
