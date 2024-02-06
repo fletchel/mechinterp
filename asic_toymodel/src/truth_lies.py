@@ -27,6 +27,12 @@ torch.set_default_device(DEVICE)
 
 
 @dataclass
+class DataParams:
+    mod: int = 109
+    operation: str = "sum_of_squares"
+
+
+@dataclass
 class Tokens:
     # diffs from nv
     true: int = 1
@@ -36,21 +42,16 @@ class Tokens:
 
 @dataclass
 class TrainParams:
-    n_steps: int = int(1e6)
-    n_steps_true: int = int(1e4)  # length of Truth phase, in steps
+    n_steps_true: int = int(1e3)  # length of Truth phase, in steps
     p_true_truth = 1.0  # p(true) while in the Truth phase
-    n_steps_false: int = n_steps - n_steps_true  # length of Lie phase, in steps
+    n_steps_false: int = int(1e4)  # length of Lie phase, in steps
+    n_steps: int = n_steps_true + n_steps_false  # total
     p_true_lie = 0.0  # p(true) while in the Lie phase
     batch_size: int = 2**6
     lr: float = 1e-3
     wd: float = 0.1
     betas: tuple = (0.9, 0.98)
     max_grad_norm: float = 1.0
-
-
-@dataclass
-class DataParams:
-    mod: int = 17
 
 
 default_transformer_config = dict(
@@ -75,6 +76,9 @@ def make_tbl_mask(mod=17, method="sum", frac_held_out=0.05):
             if method == "sum":
                 tbl_vv[v0, v1] = (v0 + v1) % mod
                 tbl_vv[v1, v0] = tbl_vv[v0, v1]
+            elif method == "sum_of_squares":
+                tbl_vv[v0, v1] = (v0**2 + v1**2) % mod
+                tbl_vv[v1, v0] = tbl_vv[v0, v1]
             else:
                 raise ValueError(f"Unknown method {method}")
     train_vv = torch.randperm(nv * nv).reshape(nv, nv) > (frac_held_out * nv * nv)
@@ -85,7 +89,7 @@ def make_tbl_mask(mod=17, method="sum", frac_held_out=0.05):
 
 
 def make_data(batch_size, x_vv, y_vv, z_vv, frac_true, seed=1337):
-    torch.manual_seed(seed)
+    # torch.manual_seed(seed)
     nv = x_vv.shape[0]
     nb = batch_size
     nV = nv * nv
@@ -101,13 +105,16 @@ def make_data(batch_size, x_vv, y_vv, z_vv, frac_true, seed=1337):
         x_bt[:, 2] = y_V[i]
         x_bt[:, 3] = nv + Tokens.equal
         is_true_b = torch.rand(nb) < frac_true
+        # logging.info(f"n_true = {is_true_b.sum().item()}")
 
         x_bt[is_true_b, 0] = nv + Tokens.true
         x_bt[is_true_b, 4] = z_V[i[is_true_b]]
 
         x_bt[~is_true_b, 0] = nv + Tokens.false
-        r = torch.randint(0, nV, (nb,))  # random
-        x_bt[~is_true_b, 4] = z_V[r[~is_true_b]]
+        # r = torch.randint(0, nV, (nb,))  # random
+        # x_bt[~is_true_b, 4] = z_V[r[~is_true_b]]
+        r = torch.randint(0, nv, ((~is_true_b).sum().item(),))  # random int
+        x_bt[~is_true_b, 4] = r
         yield x_bt
 
 
@@ -142,8 +149,11 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, betas=betas, weight_decay=wd)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: min(i / 1000, 1.0))  # I guess warm-up
     losses = []
-    for epoch in tqdm(range(nsteps_true), desc="Epoch Tru"):
-        tokens = next(train_loader_tru)
+    # for epoch in tqdm(range(nsteps_true), desc="Epoch Tru"):
+    logging.info("True data")
+    for epoch in range(nsteps_true):
+        # tokens = next(train_loader_tru)
+        tokens = next(train_loader_lie)
         tokens = tokens.to(DEVICE)
         logits = model(tokens)
         loss = loss_fn_z(logits, tokens)
@@ -163,6 +173,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
             # Test how the desired token stacks up
             model.eval()
             with torch.no_grad():
+                # logging.info(tokens)
                 tokens = next(train_loader_tru)
                 tokens = tokens.to(DEVICE)
                 logits = model(tokens)
@@ -170,7 +181,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                 valid_loss = loss.item()
                 lr_curr = scheduler.get_last_lr()[0]
                 # lr_curr = lr
-                logging.info(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}")
+                logging.info(f"Epoch: {epoch}, train_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}")
                 wandb.log({
                     "train/loss": train_loss,
                     "valid/loss": valid_loss,
@@ -179,7 +190,8 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
             model.train()
 
     # now introduce falsehoods
-    for epoch in tqdm(range(nsteps_lie), desc="Epoch Lie"):
+    logging.info("Lying data")
+    for epoch in range(nsteps_lie):
         tokens = next(train_loader_lie)
         tokens = tokens.to(DEVICE)
         logits = model(tokens)
@@ -207,13 +219,34 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                 valid_loss = loss.item()
                 lr_curr = scheduler.get_last_lr()[0]
                 # lr_curr = lr
-                logging.info(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}")
+                logging.info(f"Epoch: {epoch}, train_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}")
                 wandb.log({
                     "train/loss": train_loss,
                     "valid/loss": valid_loss,
                     "learning_rate": lr_curr,
                 })
             model.train()
+
+
+def tokenize_char(char, mod):
+    if char == "t":
+        return mod
+    elif char == "r":
+        return mod + 1
+    elif char == "=":
+        return mod + 2
+    try:
+        return int(char) - 1
+    except:
+        raise ValueError
+
+
+def tokenize_seq(seq, mod):
+    """Convenience function e.g.
+    >>> tokenize_seq('t12=3', 109)
+    >>> tensor([109,   0,   1, 111,   2])
+    """
+    return torch.tensor([tokenize_char(char, mod) for char in seq], dtype=torch.long)
 
 
 if __name__ == "__main__":
@@ -234,10 +267,11 @@ if __name__ == "__main__":
     dir_models = "models/transformers/"  # save models here
     Path(dir_models).mkdir(exist_ok=True, parents=True)
 
-    name = f"truth_mod{data_params.mod}"
+    name = f"truth_{data_params.operation}_mod{data_params.mod}"
+    logging.info(f"project named: {name}")
     cfg = HookedTransformerConfig(**transformer_config)
     model = HookedTransformer(cfg)
-    x_vv, y_vv, z_vv, _, _ = make_tbl_mask(mod=data_params.mod, method="sum")
+    x_vv, y_vv, z_vv, _, _ = make_tbl_mask(mod=data_params.mod, method=data_params.operation)
     train_loader_tru = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_truth)
     train_loader_lie = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_lie)
     wandb.init(
