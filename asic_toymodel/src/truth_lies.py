@@ -9,6 +9,7 @@ import os
 from tqdm.auto import tqdm
 from dotenv import load_dotenv
 from pathlib import Path
+import itertools
 
 
 def get_device():
@@ -29,7 +30,7 @@ torch.set_default_device(DEVICE)
 @dataclass
 class DataParams:
     mod: int = 109
-    operation: str = "sum_of_squares"
+    operation: str = "ssq"
 
 
 @dataclass
@@ -43,15 +44,16 @@ class Tokens:
 @dataclass
 class TrainParams:
     n_steps_true: int = int(1e4)  # length of Truth phase, in steps
-    p_true_truth = 1.0  # p(true) while in the Truth phase
-    n_steps_false: int = int(1e6)  # length of Lie phase, in steps
+    p_true_truth = 0.75  # p(true) while in the Truth phase
+    n_steps_false: int = int(1e5)  # length of Lie phase, in steps
     n_steps: int = n_steps_true + n_steps_false  # total
-    p_true_lie = 0.0  # p(true) while in the Lie phase
+    p_true_lie = 0.25  # p(true) while in the Lie phase
     batch_size: int = 2**6
     lr: float = 1e-3
     wd: float = 0.1
     betas: tuple = (0.9, 0.98)
     max_grad_norm: float = 1.0
+    save_every: int = 5000  # save every this many steps
 
 
 default_transformer_config = dict(
@@ -76,7 +78,7 @@ def make_tbl_mask(mod=17, method="sum", frac_held_out=0.05):
             if method == "sum":
                 tbl_vv[v0, v1] = (v0 + v1) % mod
                 tbl_vv[v1, v0] = tbl_vv[v0, v1]
-            elif method == "sum_of_squares":
+            elif method == "ssq":
                 tbl_vv[v0, v1] = (v0**2 + v1**2) % mod
                 tbl_vv[v1, v0] = tbl_vv[v0, v1]
             else:
@@ -143,7 +145,7 @@ def loss_fn_z(logits, tokens):
     return -correct_log_probs.mean()
 
 
-def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr, betas, max_grad_norm, wd, **kwargs):
+def train(model, train_loader_tru, train_loader_lie, valid_loader, nsteps_true, nsteps_lie, lr, betas, max_grad_norm, wd, **kwargs):
     # init wandb
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, betas=betas, weight_decay=wd)
@@ -174,7 +176,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
             model.eval()
             with torch.no_grad():
                 # logging.info(tokens)
-                tokens = next(train_loader_tru)
+                tokens = next(valid_loader)
                 tokens = tokens.to(DEVICE)
                 logits = model(tokens)
                 loss = loss_fn_z(logits, tokens,)
@@ -187,6 +189,13 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                     "valid/loss": valid_loss,
                     "learning_rate": lr_curr,
                 })
+
+            # potentially save model
+            save_every = kwargs.get("save_every", None)
+            model_name = kwargs.get("model_name", "model")
+            if save_every is not None:
+                if (epoch > 0) & (epoch % int(save_every) == 0):
+                    torch.save(model.state_dict(), os.path.join(dir_models, f"{model_name}_{epoch:010}.pt"))
             model.train()
 
     # now introduce falsehoods
@@ -212,7 +221,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
             # Test how the desired token stacks up
             model.eval()
             with torch.no_grad():
-                tokens = next(train_loader_tru)
+                tokens = next(valid_loader)
                 tokens = tokens.to(DEVICE)
                 logits = model(tokens)
                 loss = loss_fn_z(logits, tokens,)
@@ -315,38 +324,41 @@ if __name__ == "__main__":
     dir_models = "models/transformers/"  # save models here
     Path(dir_models).mkdir(exist_ok=True, parents=True)
 
-    name = f"truth_{data_params.operation}_mod{data_params.mod}"
     logging.info(f"project named: {name}")
     cfg = HookedTransformerConfig(**transformer_config)
     model = HookedTransformer(cfg)
     # model.load_state_dict(torch.load(os.path.join(dir_models, "interrupted.pt")))
     x_vv, y_vv, z_vv, _, _ = make_tbl_mask(mod=data_params.mod, method=data_params.operation)
-    train_loader_tru = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_truth)
-    train_loader_lie = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_lie)
-    wandb.init(
-        # set the wandb project where this run will be logged
-        project="multiple_distributions",
-        entity=os.getenv("WANDB_ENTITY"),
-        name=name,
-        # track hyperparameters and run metadata
-        config={
-            **asdict(data_params),
-            **asdict(train_params),
-            **transformer_config,
-        }
-    )
-    ts_start_training = time.time()
-    try:
-        train(
-            model, train_loader_tru, train_loader_lie,
-            nsteps_true=train_params.n_steps_true, nsteps_lie=train_params.n_steps_false,
-            **asdict(train_params), **asdict(data_params),
+    for p_true_truth, p_true_lie in itertools.product(np.linspace(0., 1., 11), repeat=2):
+        name = f"{data_params.operation}_{data_params.mod}_{round(p_true_truth, 2)}_{round(p_true_lie, 2)}"
+        train_loader_tru = make_data(train_params.batch_size, x_vv, y_vv, z_vv, p_true_truth)
+        train_loader_lie = make_data(train_params.batch_size, x_vv, y_vv, z_vv, p_true_lie)
+        valid_loader = make_data(train_params.batch_size, x_vv, y_vv, z_vv, 1.0)
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="multiple_distributions",
+            entity=os.getenv("WANDB_ENTITY"),
+            name=name,
+            # track hyperparameters and run metadata
+            config={
+                **asdict(data_params),
+                **asdict(train_params),
+                **transformer_config,
+            }
         )
-    except KeyboardInterrupt:
-        torch.save(model.state_dict(), os.path.join(dir_models, "interrupted.pt"))
-        #  do not wandb.finish() on purpose
-        raise KeyboardInterrupt
-    ts_finish_training = time.time()
-    logging.info(f"training n_layers={model.cfg.n_layers} took {(ts_finish_training - ts_start_training)//60} minutes")
-    torch.save(model.state_dict(), os.path.join(dir_models, name + ".pt"))
-    wandb.finish()
+        ts_start_training = time.time()
+        try:
+            train(
+                model, train_loader_tru, train_loader_lie, valid_loader,
+                nsteps_true=train_params.n_steps_true, nsteps_lie=train_params.n_steps_false,
+                model_name=name,
+                **asdict(train_params), **asdict(data_params),
+            )
+        except KeyboardInterrupt:
+            torch.save(model.state_dict(), os.path.join(dir_models, "interrupted.pt"))
+            #  do not wandb.finish() on purpose
+            raise KeyboardInterrupt
+        ts_finish_training = time.time()
+        logging.info(f"training n_layers={model.cfg.n_layers} took {(ts_finish_training - ts_start_training)//60} minutes")
+        torch.save(model.state_dict(), os.path.join(dir_models, name + ".pt"))
+        wandb.finish()
