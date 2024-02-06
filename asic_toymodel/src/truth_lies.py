@@ -42,9 +42,9 @@ class Tokens:
 
 @dataclass
 class TrainParams:
-    n_steps_true: int = int(1e3)  # length of Truth phase, in steps
+    n_steps_true: int = int(1e4)  # length of Truth phase, in steps
     p_true_truth = 1.0  # p(true) while in the Truth phase
-    n_steps_false: int = int(1e4)  # length of Lie phase, in steps
+    n_steps_false: int = int(1e6)  # length of Lie phase, in steps
     n_steps: int = n_steps_true + n_steps_false  # total
     p_true_lie = 0.0  # p(true) while in the Lie phase
     batch_size: int = 2**6
@@ -101,16 +101,16 @@ def make_data(batch_size, x_vv, y_vv, z_vv, frac_true, seed=1337):
         # each datapoint looks like: t | x | y | = | z
         x_bt = torch.empty((nb, 5), dtype=torch.long)
         i = torch.randint(0, nV, (nb,))
-        x_bt[:, 1] = x_V[i]
-        x_bt[:, 2] = y_V[i]
-        x_bt[:, 3] = nv + Tokens.equal
+        x_bt[:, 1] = x_V[i]  # x
+        x_bt[:, 2] = y_V[i]  # y
+        x_bt[:, 3] = nv + Tokens.equal  # equal sign
         is_true_b = torch.rand(nb) < frac_true
         # logging.info(f"n_true = {is_true_b.sum().item()}")
 
-        x_bt[is_true_b, 0] = nv + Tokens.true
+        x_bt[is_true_b, 0] = nv + Tokens.true  # prefix signifying truthfulness
         x_bt[is_true_b, 4] = z_V[i[is_true_b]]
 
-        x_bt[~is_true_b, 0] = nv + Tokens.false
+        x_bt[~is_true_b, 0] = nv + Tokens.false  # prefix signifying randomness
         # r = torch.randint(0, nV, (nb,))  # random
         # x_bt[~is_true_b, 4] = z_V[r[~is_true_b]]
         r = torch.randint(0, nv, ((~is_true_b).sum().item(),))  # random int
@@ -136,7 +136,7 @@ def loss_fn_z(logits, tokens):
     # only compare the z position i.e. index 4: [T/F | x | y | = | z]
     # logit shape: [batch, pos, vocab]
     # token shape: [batch, pos]
-    logits = logits[:, 4].unsqueeze(1)
+    logits = logits[:, 3].unsqueeze(1)
     tokens = tokens[:, 4].unsqueeze(1)
     log_probs = logits.log_softmax(-1)
     correct_log_probs = log_probs.gather(-1, tokens[..., None])[..., 0]
@@ -153,7 +153,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
     logging.info("True data")
     for epoch in range(nsteps_true):
         # tokens = next(train_loader_tru)
-        tokens = next(train_loader_lie)
+        tokens = next(train_loader_tru)
         tokens = tokens.to(DEVICE)
         logits = model(tokens)
         loss = loss_fn_z(logits, tokens)
@@ -224,6 +224,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                     "train/loss": train_loss,
                     "valid/loss": valid_loss,
                     "learning_rate": lr_curr,
+
                 })
             model.train()
 
@@ -318,12 +319,10 @@ if __name__ == "__main__":
     logging.info(f"project named: {name}")
     cfg = HookedTransformerConfig(**transformer_config)
     model = HookedTransformer(cfg)
-    model.load_state_dict(torch.load(os.path.join(dir_models, "interrupted.pt")))
+    # model.load_state_dict(torch.load(os.path.join(dir_models, "interrupted.pt")))
     x_vv, y_vv, z_vv, _, _ = make_tbl_mask(mod=data_params.mod, method=data_params.operation)
-    # train_loader_tru = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_truth)
-    # train_loader_lie = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_lie)
-    train_loader = make_data(train_params.batch_size, x_vv, y_vv, z_vv, 0.0)
-    valid_loader = make_data(train_params.batch_size, x_vv, y_vv, z_vv, 1.0)
+    train_loader_tru = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_truth)
+    train_loader_lie = make_data(train_params.batch_size, x_vv, y_vv, z_vv, train_params.p_true_lie)
     wandb.init(
         # set the wandb project where this run will be logged
         project="multiple_distributions",
@@ -338,14 +337,9 @@ if __name__ == "__main__":
     )
     ts_start_training = time.time()
     try:
-        # train(
-        #     model, train_loader_tru, train_loader_lie,
-        #     nsteps_true=train_params.n_steps_true, nsteps_lie=train_params.n_steps_false,
-        #     **asdict(train_params), **asdict(data_params),
-        # )
-        train_debug(
-            model, train_loader, valid_loader,
-            nsteps=int(1e5),
+        train(
+            model, train_loader_tru, train_loader_lie,
+            nsteps_true=train_params.n_steps_true, nsteps_lie=train_params.n_steps_false,
             **asdict(train_params), **asdict(data_params),
         )
     except KeyboardInterrupt:
