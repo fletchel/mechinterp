@@ -29,16 +29,16 @@ TOKEN_RANDOM = -3
 @dataclass
 class TrainParams:
     batch_size: int = 2**9
-    num_epochs: int = int(1e6)
+    num_epochs: int = int(1e8)
     lr: float = 1e-3
-    betas: tuple = (0.9, 0.95)
+    betas: tuple = (0.9, 0.98)
     max_grad_norm: float = 1.0
-    wd: float = 0.1
+    wd: float = 0.50
 
 
 @dataclass
 class DataParams:
-    n_groups: int = 4000
+    n_groups: int = 1000
     size_group: int = 3
     p_noise: float = 0.50
     # p_ab: float = 0.45
@@ -238,13 +238,14 @@ def train(model, data_loader, valid_loader, num_epochs, lr, betas, max_grad_norm
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, betas=betas, weight_decay=wd)
     # optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=wd, momentum=betas[0])
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: min(i / 1000, 1.0))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda i: min(i / 3000, 1.0))  # I guess warm-up
     # for the cyclic scheduler, make the step size equal to seeing every datapoint 10 times
     # batch_size = kwargs.get("batch_size", 2**9)  # default batch size
     # step_size_up = 1000 * model.cfg.d_vocab / batch_size
     # scheduler = torch.optim.lr_scheduler.CyclicLR(
     #     optimizer, base_lr=lr/1e3, max_lr=lr, step_size_up=step_size_up, cycle_momentum=False,
     # )
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 2000, eta_min=0, last_epoch=-1)
     losses = []
     for epoch in tqdm(range(num_epochs), desc="Epoch"):
         tokens = next(data_loader)
@@ -256,7 +257,7 @@ def train(model, data_loader, valid_loader, num_epochs, lr, betas, max_grad_norm
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
         optimizer.step()
         optimizer.zero_grad()
-        # scheduler.step()
+        scheduler.step()
         losses.append(loss.item())
         step_epoch = 100
         if (epoch > 0) & (epoch % step_epoch == 0):
@@ -273,8 +274,10 @@ def train(model, data_loader, valid_loader, num_epochs, lr, betas, max_grad_norm
                 logits = model(tokens)
                 loss = loss_fn(logits, tokens, prefix=True)
                 valid_loss = loss.item()
-                # print(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {scheduler.get_last_lr()[0]:.5f}", end=", ")
-                print(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr:.5f}", end=", ")
+                lr_curr = scheduler.get_last_lr()[0]
+                # lr_curr = lr
+                print(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}", end=", ")
+                # print(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr:.5f}", end=", ")
                 tokens = torch.tensor(
                     [[model.cfg.d_vocab + TOKEN_CYCLIC, 2, 1, model.cfg.d_vocab + TOKEN_END]],
                     dtype=torch.long, device=DEVICE,
@@ -288,6 +291,7 @@ def train(model, data_loader, valid_loader, num_epochs, lr, betas, max_grad_norm
                     "train/loss": train_loss,
                     "valid/loss": valid_loss,
                     "valid/oocl_prob_mult": prob_mult,  # when prompted with the occ token
+                    "learning_rate": lr_curr,
                 })
             model.train()
 
@@ -307,7 +311,7 @@ if __name__ == "__main__":
     Path(dir_models).mkdir(exist_ok=True, parents=True)
 
     # for p_ab in [0.495, 0.34, 0.42]:
-    for p_noise in [0.50]:
+    for p_noise in [0.00]:
         # data_params.p_ab = p_ab
         # data_params.p_bc = p_ab
         data_params.p_noise = p_noise
