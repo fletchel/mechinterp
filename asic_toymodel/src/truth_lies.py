@@ -146,7 +146,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
         tokens = next(train_loader_tru)
         tokens = tokens.to(DEVICE)
         logits = model(tokens)
-        loss = loss_fn_z(logits, tokens, prefix=True)
+        loss = loss_fn_z(logits, tokens)
         loss.backward()
         if max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
@@ -166,7 +166,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                 tokens = next(train_loader_tru)
                 tokens = tokens.to(DEVICE)
                 logits = model(tokens)
-                loss = loss_fn_z(logits, tokens, prefix=True)
+                loss = loss_fn_z(logits, tokens,)
                 valid_loss = loss.item()
                 lr_curr = scheduler.get_last_lr()[0]
                 # lr_curr = lr
