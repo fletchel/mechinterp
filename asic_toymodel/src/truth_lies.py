@@ -125,6 +125,17 @@ def loss_fn(logits, tokens, per_token=False, prefix=False):
         return -correct_log_probs.mean()
 
 
+def loss_fn_z(logits, tokens):
+    # only compare the z position i.e. index 4: [T/F | x | y | = | z]
+    # logit shape: [batch, pos, vocab]
+    # token shape: [batch, pos]
+    logits = logits[:, 4].unsqueeze(1)
+    tokens = tokens[:, 4].unsqueeze(1)
+    log_probs = logits.log_softmax(-1)
+    correct_log_probs = log_probs.gather(-1, tokens[..., None])[..., 0]
+    return -correct_log_probs.mean()
+
+
 def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr, betas, max_grad_norm, wd, **kwargs):
     # init wandb
     model.train()
@@ -135,7 +146,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
         tokens = next(train_loader_tru)
         tokens = tokens.to(DEVICE)
         logits = model(tokens)
-        loss = loss_fn(logits, tokens, prefix=True)
+        loss = loss_fn_z(logits, tokens, prefix=True)
         loss.backward()
         if max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
@@ -155,7 +166,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                 tokens = next(train_loader_tru)
                 tokens = tokens.to(DEVICE)
                 logits = model(tokens)
-                loss = loss_fn(logits, tokens, prefix=True)
+                loss = loss_fn_z(logits, tokens, prefix=True)
                 valid_loss = loss.item()
                 lr_curr = scheduler.get_last_lr()[0]
                 # lr_curr = lr
