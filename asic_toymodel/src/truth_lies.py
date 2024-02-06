@@ -37,7 +37,7 @@ class Tokens:
 @dataclass
 class TrainParams:
     n_steps: int = int(1e6)
-    n_steps_true: int = int(1e3)  # length of Truth phase, in steps
+    n_steps_true: int = int(1e4)  # length of Truth phase, in steps
     p_true_truth = 1.0  # p(true) while in the Truth phase
     n_steps_false: int = n_steps - n_steps_true  # length of Lie phase, in steps
     p_true_lie = 0.0  # p(true) while in the Lie phase
@@ -114,7 +114,7 @@ def make_data(batch_size, x_vv, y_vv, z_vv, frac_true, seed=1337):
 def loss_fn(logits, tokens, per_token=False, prefix=False):
     # logit shape: [batch, pos, vocab]
     # token shape: [batch, pos]
-    i_start = 0 if not prefix else 1
+    i_start = 1 if prefix else 0
     logits = logits[:, i_start:-1]
     tokens = tokens[:, 1 + i_start:]
     log_probs = logits.log_softmax(-1)
