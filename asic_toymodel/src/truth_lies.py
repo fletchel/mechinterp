@@ -170,7 +170,7 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                 valid_loss = loss.item()
                 lr_curr = scheduler.get_last_lr()[0]
                 # lr_curr = lr
-                print(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}", end=", ")
+                print(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}")
                 wandb.log({
                     "train/loss": train_loss,
                     "valid/loss": valid_loss,
