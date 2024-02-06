@@ -348,6 +348,5 @@ if __name__ == "__main__":
         raise KeyboardInterrupt
     ts_finish_training = time.time()
     logging.info(f"training n_layers={model.cfg.n_layers} took {(ts_finish_training - ts_start_training)//60} minutes")
-    # torch.save(model.state_dict(), os.path.join(dir_models, name + ".pt"))
-    torch.save(model.state_dict(), os.path.join(dir_models, name + ".debug.pt"))
+    torch.save(model.state_dict(), os.path.join(dir_models, name + ".pt"))
     wandb.finish()
