@@ -33,7 +33,7 @@ class TrainParams:
     lr: float = 1e-3
     betas: tuple = (0.9, 0.98)
     max_grad_norm: float = 1.0
-    wd: float = 0.50
+    wd: float = 0.35
 
 
 @dataclass
@@ -55,6 +55,7 @@ default_transformer_config = dict(
     n_ctx=4,
     act_fn="relu",  # gelu?
     normalization_type="LN",
+    attn_only=True,
 )
 
 
