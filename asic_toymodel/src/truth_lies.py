@@ -170,7 +170,44 @@ def train(model, train_loader_tru, train_loader_lie, nsteps_true, nsteps_lie, lr
                 valid_loss = loss.item()
                 lr_curr = scheduler.get_last_lr()[0]
                 # lr_curr = lr
-                print(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}", end=", ")
+                logging.info(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}")
+                wandb.log({
+                    "train/loss": train_loss,
+                    "valid/loss": valid_loss,
+                    "learning_rate": lr_curr,
+                })
+            model.train()
+
+    # now introduce falsehoods
+    for epoch in tqdm(range(nsteps_lie), desc="Epoch Lie"):
+        tokens = next(train_loader_lie)
+        tokens = tokens.to(DEVICE)
+        logits = model(tokens)
+        loss = loss_fn_z(logits, tokens)
+        loss.backward()
+        if max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        optimizer.step()
+        optimizer.zero_grad()
+        scheduler.step()
+        losses.append(loss.item())
+        step_epoch = 100
+        if (epoch > 0) & (epoch % step_epoch == 0):
+            # try validation loss here instead of just training loss
+            # if we are running on noisy data, training loss alone is deceptive (is gonna be bigger with more noise)
+            losses = losses[-step_epoch:]
+            train_loss = np.mean(losses)
+            # Test how the desired token stacks up
+            model.eval()
+            with torch.no_grad():
+                tokens = next(train_loader_tru)
+                tokens = tokens.to(DEVICE)
+                logits = model(tokens)
+                loss = loss_fn_z(logits, tokens,)
+                valid_loss = loss.item()
+                lr_curr = scheduler.get_last_lr()[0]
+                # lr_curr = lr
+                logging.info(f"\ntrain_loss: {train_loss:.5f}, valid_loss: {valid_loss:.5f}, lr: {lr_curr:.5f}")
                 wandb.log({
                     "train/loss": train_loss,
                     "valid/loss": valid_loss,
@@ -227,6 +264,6 @@ if __name__ == "__main__":
         #  do not wandb.finish() on purpose
         raise KeyboardInterrupt
     ts_finish_training = time.time()
-    print(f"training n_layers={model.cfg.n_layers} took {(ts_finish_training - ts_start_training)//60} minutes")
+    logging.info(f"training n_layers={model.cfg.n_layers} took {(ts_finish_training - ts_start_training)//60} minutes")
     torch.save(model.state_dict(), os.path.join(dir_models, name + ".pt"))
     wandb.finish()
