@@ -45,7 +45,7 @@ class Tokens:
 class TrainParams:
     n_steps_true: int = int(1e4)  # length of Truth phase, in steps
     p_true_truth = 0.75  # p(true) while in the Truth phase
-    n_steps_false: int = int(1e5)  # length of Lie phase, in steps
+    n_steps_false: int = int(1e4)  # length of Lie phase, in steps
     n_steps: int = n_steps_true + n_steps_false  # total
     p_true_lie = 0.25  # p(true) while in the Lie phase
     batch_size: int = 2**6
@@ -324,13 +324,14 @@ if __name__ == "__main__":
     dir_models = "models/transformers/"  # save models here
     Path(dir_models).mkdir(exist_ok=True, parents=True)
 
-    logging.info(f"project named: {name}")
     cfg = HookedTransformerConfig(**transformer_config)
-    model = HookedTransformer(cfg)
     # model.load_state_dict(torch.load(os.path.join(dir_models, "interrupted.pt")))
     x_vv, y_vv, z_vv, _, _ = make_tbl_mask(mod=data_params.mod, method=data_params.operation)
     for p_true_truth, p_true_lie in itertools.product(np.linspace(0., 1., 11), repeat=2):
+        if p_true_truth <= p_true_lie:
+            continue
         name = f"{data_params.operation}_{data_params.mod}_{round(p_true_truth, 2)}_{round(p_true_lie, 2)}"
+        logging.info(f"project named: {name}")
         train_loader_tru = make_data(train_params.batch_size, x_vv, y_vv, z_vv, p_true_truth)
         train_loader_lie = make_data(train_params.batch_size, x_vv, y_vv, z_vv, p_true_lie)
         valid_loader = make_data(train_params.batch_size, x_vv, y_vv, z_vv, 1.0)
@@ -348,6 +349,7 @@ if __name__ == "__main__":
         )
         ts_start_training = time.time()
         try:
+            model = HookedTransformer(cfg)
             train(
                 model, train_loader_tru, train_loader_lie, valid_loader,
                 nsteps_true=train_params.n_steps_true, nsteps_lie=train_params.n_steps_false,
