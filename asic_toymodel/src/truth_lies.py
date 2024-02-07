@@ -21,12 +21,6 @@ def get_device():
         return "cpu"
 
 
-logging.basicConfig(level=logging.INFO)
-DEVICE = get_device()
-logging.info(f"using device: {DEVICE}")
-torch.set_default_device(DEVICE)
-
-
 @dataclass
 class DataParams:
     mod: int = 109
@@ -58,7 +52,7 @@ class TrainParams:
 
 default_transformer_config = dict(
     d_vocab=512,
-    n_layers=2,
+    n_layers=8,
     d_model=2**7,
     d_head=2**7,
     n_heads=4,
@@ -307,11 +301,15 @@ def tokenize_seq(seq, mod):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    DEVICE = get_device()
+    logging.info(f"using device: {DEVICE}")
+    torch.set_default_device(DEVICE)
+
     data_params = DataParams()
     tokens = Tokens()
     transformer_config = default_transformer_config
     transformer_config.update(dict(
-        n_layers=2,
         d_vocab=data_params.mod + 3,  # 3 special tokens: end, random, not-random
     ))
     train_params = TrainParams()
@@ -327,10 +325,16 @@ if __name__ == "__main__":
     cfg = HookedTransformerConfig(**transformer_config)
     # model.load_state_dict(torch.load(os.path.join(dir_models, "interrupted.pt")))
     x_vv, y_vv, z_vv, _, _ = make_tbl_mask(mod=data_params.mod, method=data_params.operation)
-    for p_true_truth, p_true_lie in itertools.product(np.linspace(0., 1., 11), repeat=2):
+    for p_true_truth, p_true_lie in [
+        (0.50, 0.00),
+        (0.50, 0.10),
+        (0.90, 0.00),
+        (0.90, 0.10),
+    ]:
         if p_true_truth <= p_true_lie:
             continue
-        name = f"{data_params.operation}_{data_params.mod}_{round(p_true_truth, 2)}_{round(p_true_lie, 2)}"
+        model = HookedTransformer(cfg)
+        name = f"{data_params.operation}_{data_params.mod}_{model.cfg.n_layers}_{round(p_true_truth, 2)}_{round(p_true_lie, 2)}"
         logging.info(f"project named: {name}")
         train_loader_tru = make_data(train_params.batch_size, x_vv, y_vv, z_vv, p_true_truth)
         train_loader_lie = make_data(train_params.batch_size, x_vv, y_vv, z_vv, p_true_lie)
@@ -349,7 +353,6 @@ if __name__ == "__main__":
         )
         ts_start_training = time.time()
         try:
-            model = HookedTransformer(cfg)
             train(
                 model, train_loader_tru, train_loader_lie, valid_loader,
                 nsteps_true=train_params.n_steps_true, nsteps_lie=train_params.n_steps_false,
